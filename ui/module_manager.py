@@ -965,8 +965,11 @@ class ModuleManager(QObject):
             f = module.params[param_key].get('path_filter', None)
             p = dialog.getOpenFileUrl(self.parent(), filter=f)[0].toLocalFile()
             if osp.exists(p):
-                param_widget: ParamComboBox = param_content['widget']
-                param_widget.setCurrentText(p)
+                param_widget = param_content['widget']
+                if hasattr(param_widget, 'setCurrentText'):
+                    param_widget.setCurrentText(p)
+                elif hasattr(param_widget, 'setText'):
+                    param_widget.setText(p)
         else:
             module.updateParam(param_key, param_content['content'])
 

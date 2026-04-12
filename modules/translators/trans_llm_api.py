@@ -2,6 +2,7 @@ import re
 import time
 import json
 import traceback
+import os
 from typing import List, Dict, Optional, Type
 
 import httpx
@@ -37,7 +38,7 @@ class LLM_API_Translator(BaseTranslator):
     params: Dict = {
         "provider": {
             "type": "selector",
-            "options": ["OpenAI", "Google", "Grok", "OpenRouter", "LLM Studio", "Ollama"],
+            "options": ["OpenAI", "Google", "Grok", "OpenRouter", "LLM Studio", "Ollama", "Vertex AI"],
             "value": "OpenAI",
             "description": "Select the LLM provider.",
         },
@@ -56,9 +57,12 @@ class LLM_API_Translator(BaseTranslator):
                 "OAI: gpt-4o",
                 "OAI: gpt-4-turbo",
                 "OAI: gpt-3.5-turbo",
+                "GGL: gemini-3.1-pro-preview",
+                "GGL: gemini-3.1-flash-preview",
+                "GGL: gemini-3.1-flash-lite-preview",
+                "GGL: gemini-3-pro-preview",
+                "GGL: gemini-3-flash-preview",
                 "GGL: gemini-1.5-pro-latest",
-                "GGL: gemini-2.5-flash",
-                "GGL: gemini-2.5-flash-lite",
                 "XAI: grok-4",
                 "XAI: grok-3",
                 "XAI: grok-3-mini",
@@ -75,6 +79,42 @@ class LLM_API_Translator(BaseTranslator):
         "endpoint": {
             "value": "",
             "description": "Base URL for the API. Leave empty for provider default.",
+        },
+        "vertex_location": {
+            "type": "selector",
+            "options": [
+                "us-central1",
+                "us-east4",
+                "us-west1",
+                "us-west4",
+                "europe-west1",
+                "europe-west2",
+                "europe-west3",
+                "europe-west4",
+                "europe-west9",
+                "europe-north1",
+                "asia-northeast1",
+                "asia-northeast2",
+                "asia-northeast3",
+                "asia-southeast1",
+                "asia-south1",
+                "australia-southeast1",
+                "southamerica-east1",
+                "northamerica-northeast1",
+            ],
+            "value": "us-central1",
+            "description": "Vertex AI region.",
+        },
+        "vertex_project": {
+            "value": "",
+            "description": "GCP Project ID for Vertex AI. Required when provider is Vertex AI.",
+        },
+        "vertex_credentials": {
+            "type": "line_editor",
+            "value": "",
+            "description": "Path to the Vertex AI service account JSON key file.",
+            "path_selector": True,
+            "path_filter": "JSON Files (*.json)",
         },
         "system_prompt": {
             "type": "editor",
@@ -126,7 +166,18 @@ class LLM_API_Translator(BaseTranslator):
             'value': False,
             'description': 'check it if you\'re running it locally on a single device and encountered a crash due to vram OOM',
             'type': 'checkbox',
-        }
+        },
+        "__provider_configs": {
+            "value": {
+                "OpenAI": {"apikey": "", "multiple_keys": ""},
+                "Google": {"apikey": "", "multiple_keys": ""},
+                "Grok": {"apikey": "", "multiple_keys": ""},
+                "OpenRouter": {"apikey": "", "multiple_keys": ""},
+                "LLM Studio": {"apikey": "", "multiple_keys": ""},
+                "Ollama": {"apikey": "", "multiple_keys": ""},
+                "Vertex AI": {"apikey": "", "multiple_keys": ""},
+            },
+        },
     }
 
     def _setup_translator(self):
@@ -163,10 +214,44 @@ class LLM_API_Translator(BaseTranslator):
         self.minute_start_time = time.time()
         self.key_usage = {}
         self.client = None
+        # Restore config for current provider on startup
+        self._restore_provider_config(self.provider)
+        self._update_model_options(self.provider)
+
+    def _restore_provider_config(self, provider: str):
+        configs = self.get_param_value("__provider_configs")
+        if provider in configs:
+            config = configs[provider]
+            self.set_param_value("apikey", config.get("apikey", ""))
+            self.set_param_value("multiple_keys", config.get("multiple_keys", ""))
+
+    def _update_model_options(self, provider: str):
+        all_models = [
+            "OAI: gpt-4o", "OAI: gpt-4-turbo", "OAI: gpt-3.5-turbo",
+            "GGL: gemini-3.1-pro-preview", "GGL: gemini-3.1-flash-preview", "GGL: gemini-3.1-flash-lite-preview",
+            "GGL: gemini-3-pro-preview", "GGL: gemini-3-flash-preview",
+            "GGL: gemini-2.5-pro", "GGL: gemini-2.5-flash", "GGL: gemini-2.5-flash-lite", "GGL: gemini-2.0-flash",
+            "GGL: gemini-1.5-pro-latest",
+            "VAI: gemini-3.1-pro-preview", "VAI: gemini-3.1-flash-preview", "VAI: gemini-3.1-flash-lite-preview",
+            "VAI: gemini-3-pro-preview", "VAI: gemini-3-flash-preview",
+            "VAI: gemini-2.5-pro", "VAI: gemini-2.5-flash", "VAI: gemini-2.0-flash", "VAI: gemini-1.5-pro",
+            "XAI: grok-4", "XAI: grok-3", "XAI: grok-3-mini",
+            "LLMS: (override model field)", "OLLAMA: (override model field)",
+        ]
+        if provider == "Vertex AI":
+            filtered_models = [m for m in all_models if m.startswith("VAI:") or m.startswith("LLMS:")]
+        else:
+            filtered_models = [m for m in all_models if not m.startswith("VAI:")]
+        self.params["model"]["options"] = filtered_models
 
     def _initialize_client(self, api_key_to_use: str) -> bool:
-        endpoint = self.endpoint
         provider = self.provider
+        if provider == "Vertex AI":
+            # Vertex AI uses native Gemini REST API, not OpenAI compat
+            self.client = None
+            return True
+
+        endpoint = self.endpoint
         if not endpoint:
             if provider == "Google":
                 endpoint = "https://generativelanguage.googleapis.com/v1beta/openai"
@@ -246,6 +331,18 @@ class LLM_API_Translator(BaseTranslator):
     @property
     def endpoint(self) -> Optional[str]:
         return self.get_param_value("endpoint") or None
+
+    @property
+    def vertex_location(self) -> str:
+        return self.get_param_value("vertex_location") or "us-central1"
+
+    @property
+    def vertex_project(self) -> str:
+        return self.get_param_value("vertex_project") or ""
+
+    @property
+    def vertex_credentials(self) -> str:
+        return self.get_param_value("vertex_credentials") or ""
 
     @property
     def temperature(self) -> float:
@@ -390,6 +487,176 @@ class LLM_API_Translator(BaseTranslator):
         self.logger.error("All available API keys are currently rate-limited.")
         return None
 
+    def _get_vertex_token(self) -> Optional[str]:
+        """Get OAuth2 access token from Vertex AI service account credentials."""
+        vertex_credentials = self.get_param_value("vertex_credentials") or ""
+        if not vertex_credentials:
+            return None
+
+        try:
+            from google.oauth2 import service_account
+            import google.auth.transport.requests
+
+            creds_path = vertex_credentials.strip()
+            if os.path.isfile(creds_path):
+                credentials = service_account.Credentials.from_service_account_file(
+                    creds_path,
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                )
+            else:
+                self.logger.error(f"Vertex AI credentials file not found: {creds_path}")
+                return None
+
+            request = google.auth.transport.requests.Request()
+            credentials.refresh(request)
+            return credentials.token
+        except Exception as e:
+            self.logger.error(f"Failed to load Vertex AI credentials: {e}")
+            return None
+
+    def _request_vertex_translation(self, api_key: str, prompt: str) -> Optional[TranslationResponse]:
+        """Make a direct REST API call to Vertex AI Gemini (generateContent)."""
+        vertex_project = self.get_param_value("vertex_project") or ""
+        vertex_location = self.get_param_value("vertex_location") or "us-central1"
+
+        if not vertex_project:
+            raise ValueError("vertex_project must be set for Vertex AI provider.")
+
+        token = self._get_vertex_token()
+        if not token:
+            raise ConnectionError("Failed to obtain Vertex AI access token. Check your credentials file path/content.")
+
+        model_name = self.override_model or self.model
+        if ": " in model_name:
+            model_name = model_name.split(": ", 1)[1]
+
+        url = (
+            f"https://{vertex_location}-aiplatform.googleapis.com/v1"
+            f"/projects/{vertex_project}/locations/{vertex_location}"
+            f"/publishers/google/models/{model_name}:generateContent"
+        )
+
+        contents = []
+        if self.system_prompt:
+            contents.append({
+                "role": "user",
+                "parts": [{"text": self.system_prompt}]
+            })
+        contents.append({
+            "role": "user",
+            "parts": [{"text": prompt}]
+        })
+
+        body = {
+            "contents": contents,
+            "generationConfig": {
+                "temperature": self.temperature,
+                "topP": self.top_p,
+                "maxOutputTokens": self.max_tokens,
+                "responseMimeType": "application/json",
+            },
+        }
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+
+        proxy = self.proxy
+        http_client = None
+        if proxy:
+            try:
+                proxy_mounts = {
+                    "http://": httpx.HTTPTransport(proxy=proxy),
+                    "https://": httpx.HTTPTransport(proxy=proxy),
+                }
+                http_client = httpx.Client(mounts=proxy_mounts)
+            except Exception:
+                http_client = httpx.Client()
+        else:
+            http_client = httpx.Client()
+
+        self.logger.debug(f"Vertex AI request to model: {model_name}")
+        response = http_client.post(url, headers=headers, json=body, timeout=60.0)
+
+        if response.status_code != 200:
+            self.logger.error(f"Vertex AI API error ({response.status_code}): {response.text}")
+            raise httpx.HTTPStatusError(
+                f"Vertex AI API error: {response.status_code}",
+                request=response.request,
+                response=response,
+            )
+
+        data = response.json()
+
+        # Extract text from Gemini response
+        text_content = ""
+        if "candidates" in data and data["candidates"]:
+            candidate = data["candidates"][0]
+            if "content" in candidate and "parts" in candidate["content"]:
+                parts = candidate["content"]["parts"]
+                for part in parts:
+                    if "text" in part:
+                        text_content += part["text"]
+
+        if not text_content:
+            self.logger.warning("No text content in Vertex AI response.")
+            return None
+
+        # Extract usage info
+        if "usageMetadata" in data:
+            usage = data["usageMetadata"]
+            total_tokens = usage.get("totalTokenCount", 0)
+            self.token_count += total_tokens
+            self.token_count_last = total_tokens
+        else:
+            self.token_count_last = 0
+
+        # Parse JSON response
+        json_to_parse = text_content.strip()
+        match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", json_to_parse, re.DOTALL)
+        if match:
+            json_to_parse = match.group(1)
+        else:
+            start = json_to_parse.find("{")
+            end = json_to_parse.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                json_to_parse = json_to_parse[start : end + 1]
+
+        try:
+            parsed = json.loads(json_to_parse)
+            return TranslationResponse.model_validate(parsed)
+        except (ValidationError, json.JSONDecodeError) as e:
+            self.logger.warning(f"Initial parsing failed: {e}. Trying flexible format fix.")
+            try:
+                simple_data = json.loads(json_to_parse)
+                fixed_translations = []
+
+                # Case 1: {"result": [{"id": 1, "translation": "..."}, ...]}
+                if isinstance(simple_data, dict):
+                    for key in ("translations", "result", "items", "data"):
+                        if key in simple_data and isinstance(simple_data[key], list):
+                            fixed_translations = simple_data[key]
+                            break
+
+                    # Case 2: {"1": "...", "2": "..."}
+                    if not fixed_translations and all(k.isdigit() for k in simple_data.keys()):
+                        fixed_translations = [
+                            {"id": int(k), "translation": v} for k, v in simple_data.items()
+                        ]
+
+                # Case 3: [{"id": 1, "translation": "..."}, ...]
+                elif isinstance(simple_data, list):
+                    fixed_translations = simple_data
+
+                if fixed_translations:
+                    return TranslationResponse.model_validate({"translations": fixed_translations})
+                raise e
+            except Exception as final_e:
+                self.logger.error(f"Parse failed after fix attempt: {final_e}")
+                self.logger.debug(f"Raw content: {text_content}")
+                raise
+
     def _request_translation(self, prompt: str) -> Optional[TranslationResponse]:
         current_api_key = self._select_api_key()
         
@@ -408,6 +675,10 @@ class LLM_API_Translator(BaseTranslator):
             raise ConnectionError("Failed to initialize API client.")
 
         self._respect_delay()
+
+        # Vertex AI uses native REST API
+        if self.provider == "Vertex AI":
+            return self._request_vertex_translation(current_api_key, prompt)
 
         model_name = self.override_model or self.model
         if ": " in model_name:
@@ -432,7 +703,7 @@ class LLM_API_Translator(BaseTranslator):
                 "type": "json_schema",
                 "json_schema": {"schema": TranslationResponse.model_json_schema()},
             }
-        elif self.provider in ["OpenAI", "Grok", "Google", "OpenRouter", "Ollama"]:
+        elif self.provider in ["OpenAI", "Grok", "Google", "OpenRouter", "Ollama", "Vertex AI"]:
             self.logger.debug(f"Using 'json_object' mode for {self.provider}.")
             api_args["response_format"] = {"type": "json_object"}
 
@@ -532,6 +803,9 @@ class LLM_API_Translator(BaseTranslator):
             openai.InternalServerError,
             openai.APIStatusError,
             httpx.RequestError,
+            httpx.HTTPStatusError,
+            httpx.ConnectError,
+            httpx.ReadTimeout,
         )
 
         translations = []
@@ -612,8 +886,36 @@ class LLM_API_Translator(BaseTranslator):
         return translations
 
     def updateParam(self, param_key: str, param_content):
+        if param_key == "provider":
+            old_provider = self.get_param_value("provider")
+            new_provider = param_content
+            if old_provider != new_provider:
+                configs = self.get_param_value("__provider_configs")
+                # Save current keys to old provider
+                configs[old_provider] = {
+                    "apikey": self.get_param_value("apikey"),
+                    "multiple_keys": self.get_param_value("multiple_keys")
+                }
+                # Restore keys for new provider
+                if new_provider in configs:
+                    new_config = configs[new_provider]
+                    self.set_param_value("apikey", new_config.get("apikey", ""))
+                    self.set_param_value("multiple_keys", new_config.get("multiple_keys", ""))
+                else:
+                    self.set_param_value("apikey", "")
+                    self.set_param_value("multiple_keys", "")
+
+                # Update model options based on provider
+                self._update_model_options(new_provider)
+
         super().updateParam(param_key, param_content)
 
-        if param_key in ["proxy", "multiple_keys", "apikey", "provider", "endpoint"]:
+        if param_key in ["apikey", "multiple_keys"]:
+            provider = self.provider
+            configs = self.get_param_value("__provider_configs")
+            if provider not in configs:
+                configs[provider] = {}
+            configs[provider][param_key] = param_content
+
+        if param_key in ["proxy", "multiple_keys", "apikey", "provider", "endpoint", "vertex_location", "vertex_project", "vertex_credentials"]:
             self.client = None
-            

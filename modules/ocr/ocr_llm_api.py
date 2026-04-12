@@ -2,6 +2,7 @@ import re
 import time
 import base64
 import json
+import os
 import cv2
 import numpy as np
 from typing import List, Optional
@@ -143,12 +144,16 @@ class LLM_OCR(OCRBase):
         "OAI: gpt-4",
         "GGL: gemini-1.5-pro-latest",
         "GGL: gemini-1.5-flash-latest",
+        "VAI: gemini-2.5-flash",
+        "VAI: gemini-2.5-pro",
+        "VAI: gemini-2.0-flash",
+        "VAI: gemini-1.5-pro",
     ]
 
     params = {
         "provider": {
             "type": "selector",
-            "options": ["OpenAI", "Google", "OpenRouter", "Ollama"],
+            "options": ["OpenAI", "Google", "OpenRouter", "Ollama", "Vertex AI"],
             "value": "OpenAI",
             "description": "Select the LLM provider.",
         },
@@ -164,6 +169,41 @@ class LLM_OCR(OCRBase):
         "endpoint": {
             "value": "",
             "description": "Base URL for the API. Leave empty for provider default.",
+        },
+        "vertex_location": {
+            "type": "selector",
+            "options": [
+                "us-central1",
+                "us-east4",
+                "us-west1",
+                "us-west4",
+                "europe-west1",
+                "europe-west2",
+                "europe-west3",
+                "europe-west4",
+                "europe-west9",
+                "europe-north1",
+                "asia-northeast1",
+                "asia-northeast2",
+                "asia-northeast3",
+                "asia-southeast1",
+                "asia-south1",
+                "australia-southeast1",
+                "southamerica-east1",
+                "northamerica-northeast1",
+            ],
+            "value": "us-central1",
+            "description": "Vertex AI region.",
+        },
+        "vertex_project": {
+            "value": "",
+            "description": "GCP Project ID for Vertex AI. Required when provider is Vertex AI.",
+        },
+        "vertex_credentials": {
+            "type": "line_editor",
+            "value": "",
+            "description": "Path to the Vertex AI service account JSON key file.",
+            "path_selector": True,
         },
         "model": {
             "type": "selector",
@@ -225,8 +265,13 @@ class LLM_OCR(OCRBase):
         self.current_key_index = 0
 
     def _initialize_client(self, api_key_to_use: str):
-        endpoint = self.endpoint
         provider = self.provider
+        if provider == "Vertex AI":
+            # Vertex AI uses native Gemini REST API, not OpenAI compat
+            self.client = None
+            return
+
+        endpoint = self.endpoint
         if not endpoint:
             if provider == "OpenAI":
                 endpoint = "https://api.openai.com/v1"
@@ -402,11 +447,111 @@ class LLM_OCR(OCRBase):
         self.logger.error("All API keys are rate-limited.")
         return None
 
+    def _get_vertex_token(self) -> Optional[str]:
+        """Get OAuth2 access token from Vertex AI service account credentials."""
+        vertex_credentials = self.get_param_value("vertex_credentials") or ""
+        if not vertex_credentials:
+            return None
+
+        try:
+            from google.oauth2 import service_account
+            import google.auth.transport.requests
+
+            creds_path = vertex_credentials.strip()
+            if os.path.isfile(creds_path):
+                credentials = service_account.Credentials.from_service_account_file(
+                    creds_path,
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                )
+            else:
+                self.logger.error(f"Vertex AI credentials file not found: {creds_path}")
+                return None
+
+            request = google.auth.transport.requests.Request()
+            credentials.refresh(request)
+            return credentials.token
+        except Exception as e:
+            self.logger.error(f"Failed to load Vertex AI credentials: {e}")
+            return None
+
+    def _ocr_vertex(self, api_key: str, img_base64: str, prompt_text: str, model_name: str) -> str:
+        """Make a direct REST API call to Vertex AI Gemini for OCR (generateContent with image)."""
+        vertex_project = self.get_param_value("vertex_project") or ""
+        vertex_location = self.get_param_value("vertex_location") or "us-central1"
+
+        if not vertex_project:
+            return "[ERROR: vertex_project must be set for Vertex AI provider.]"
+
+        token = self._get_vertex_token()
+        if not token:
+            return "[ERROR: Failed to obtain Vertex AI token. Check credentials.]"
+
+        url = (
+            f"https://{vertex_location}-aiplatform.googleapis.com/v1"
+            f"/projects/{vertex_project}/locations/{vertex_location}"
+            f"/publishers/google/models/{model_name}:generateContent"
+        )
+
+        contents = [{
+            "role": "user",
+            "parts": [
+                {"text": prompt_text},
+                {"inline_data": {"mime_type": "image/jpeg", "data": img_base64}},
+            ],
+        }]
+
+        body = {
+            "contents": contents,
+            "generationConfig": {
+                "temperature": 0.1,
+                "topP": 1.0,
+                "maxOutputTokens": self.max_response_tokens,
+            },
+        }
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+
+        http_client = None
+        if self.proxy:
+            try:
+                proxy_mounts = {"all://": httpx.HTTPTransport(proxy=self.proxy)}
+                http_client = httpx.Client(mounts=proxy_mounts)
+            except Exception:
+                http_client = httpx.Client()
+        else:
+            http_client = httpx.Client()
+
+        self.logger.debug(f"Vertex AI OCR request to model: {model_name}")
+        response = http_client.post(url, headers=headers, json=body, timeout=120.0)
+
+        if response.status_code != 200:
+            self.logger.error(f"Vertex AI OCR error ({response.status_code}): {response.text}")
+            return f"[ERROR: HTTP {response.status_code}]"
+
+        data = response.json()
+
+        text_content = ""
+        if "candidates" in data and data["candidates"]:
+            candidate = data["candidates"][0]
+            if "content" in candidate and "parts" in candidate["content"]:
+                for part in candidate["content"]["parts"]:
+                    if "text" in part:
+                        text_content += part["text"]
+
+        if not text_content:
+            self.logger.warning("No text in Vertex AI OCR response.")
+            return ""
+
+        return text_content.replace("\n", " ").strip()
+
     def ocr(self, img_base64: str, prompt_override: str = None) -> str:
         api_key_to_use = self._select_api_key()
         
         if not api_key_to_use:
-            if self.provider in ["LLM Studio", "Ollama"]:
+            if self.provider in ["Ollama"]:
                 api_key_to_use = "dummy-key"
             else:
                 return "[ERROR: No available API key]"
@@ -419,6 +564,14 @@ class LLM_OCR(OCRBase):
         try:
             lang_name = self.language
             prompt_text = (prompt_override or self.prompt).format(language=lang_name)
+
+            model_name = self.override_model or self.model
+            if ": " in model_name:
+                model_name = model_name.split(": ", 1)[1]
+
+            # Vertex AI uses native REST API
+            if self.provider == "Vertex AI":
+                return self._ocr_vertex(api_key_to_use, img_base64, prompt_text, model_name)
 
             image_content_part = {
                 "type": "image_url",
@@ -441,10 +594,6 @@ class LLM_OCR(OCRBase):
             ]
             if self.system_prompt:
                 messages.insert(0, {"role": "system", "content": self.system_prompt})
-
-            model_name = self.override_model or self.model
-            if ": " in model_name:
-                model_name = model_name.split(": ", 1)[1]
 
             self.logger.debug(f"OCR request with model: {model_name}")
 
@@ -488,10 +637,9 @@ class LLM_OCR(OCRBase):
 
     def updateParam(self, param_key: str, param_content):
         super().updateParam(param_key, param_content)
-        if param_key in ["api_key", "multiple_keys", "endpoint", "proxy", "provider"]:
+        if param_key in ["api_key", "multiple_keys", "endpoint", "proxy", "provider", "vertex_location", "vertex_project", "vertex_credentials"]:
             self.client = None  # Force re-initialization on next call
         if param_key in ["requests_per_minute", "delay"]:
             self.request_count_minute = 0
             self.minute_start_time = time.time()
             self.last_request_time = 0
-            
