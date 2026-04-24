@@ -52,11 +52,11 @@ class ModuleConfig(Config):
             if module_params is None:
                 continue
             saving_module_params = {}
-            sd[module_key] = saving_module_params
+SD[module_key] = saving_module_params
             for pk, pv in module_params.items():
                 if pk in {'description'}:
                     continue
-                if pk.startswith('__'):
+                if pk.startswith('__') and pk != '__provider_configs':
                     continue
                 if isinstance(pv, dict):
                     pv = pv['value']

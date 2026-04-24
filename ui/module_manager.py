@@ -932,6 +932,8 @@ class ModuleManager(QObject):
         if self.translator is not None:
             self.updateModuleSetupParam(self.translator, param_key, param_content)
             cfg_module.translator_params[self.translator.name] = self.translator.params
+            if param_key == 'provider':
+                self.translator_panel.refreshModuleParamWidget()
 
     def on_inpainterparam_edited(self, param_key: str, param_content: dict):
         if self.inpainter is not None:
@@ -947,6 +949,8 @@ class ModuleManager(QObject):
         if self.ocr is not None:
             self.updateModuleSetupParam(self.ocr, param_key, param_content)
             cfg_module.ocr_params[self.ocr.name] = self.ocr.params
+            if param_key == 'provider':
+                self.ocr_panel.refreshModuleParamWidget()
 
     def updateModuleSetupParam(self, 
                                module: Union[InpainterBase, BaseTranslator],
