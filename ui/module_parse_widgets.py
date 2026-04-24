@@ -184,6 +184,8 @@ class ParamWidget(QWidget):
                 flush_btn = param_dict.get('flush_btn', False)
                 path_selector = param_dict.get('path_selector', False)
                 param_size = param_dict.get('size', 'short')
+                if param_key == 'model':
+                    param_size = 'long'
                 if param_type == 'selector':
                     if 'url' in param_key:
                         size = size2width('median')
