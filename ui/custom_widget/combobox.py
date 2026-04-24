@@ -20,11 +20,11 @@ class ComboBox(QComboBox):
     def setScrollWidget(self, scrollWidget: QWidget):
         self.scrollWidget = scrollWidget
 
-    def wheelEvent(self, *args, **kwargs):
-        if self.scrollWidget is None or self.hasFocus():
-            return super().wheelEvent(*args, **kwargs)
+    def wheelEvent(self, event):
+        if self.scrollWidget is not None:
+            return self.scrollWidget.wheelEvent(event)
         else:
-            return self.scrollWidget.wheelEvent(*args, **kwargs)
+            event.ignore()
         
 
 class SmallComboBox(ComboBox):
@@ -103,6 +103,9 @@ class SizeComboBox(QComboBox):
         self._value = 0
         if init_value is not None:
             self.setValue(init_value)
+
+    def wheelEvent(self, event):
+        event.ignore()
 
     def on_text_changed(self):
         if self.hasFocus():
