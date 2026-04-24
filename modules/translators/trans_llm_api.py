@@ -58,7 +58,6 @@ class LLM_API_Translator(BaseTranslator):
                 "OAI: gpt-4-turbo",
                 "OAI: gpt-3.5-turbo",
                 "GGL: gemini-3.1-pro-preview",
-                "GGL: gemini-3.1-flash-preview",
                 "GGL: gemini-3.1-flash-lite-preview",
                 "GGL: gemini-3-pro-preview",
                 "GGL: gemini-3-flash-preview",
@@ -229,11 +228,11 @@ class LLM_API_Translator(BaseTranslator):
     def _update_model_options(self, provider: str):
         all_models = [
             "OAI: gpt-4o", "OAI: gpt-4-turbo", "OAI: gpt-3.5-turbo",
-            "GGL: gemini-3.1-pro-preview", "GGL: gemini-3.1-flash-preview", "GGL: gemini-3.1-flash-lite-preview",
+            "GGL: gemini-3.1-pro-preview", "GGL: gemini-3.1-flash-lite-preview",
             "GGL: gemini-3-pro-preview", "GGL: gemini-3-flash-preview",
             "GGL: gemini-2.5-pro", "GGL: gemini-2.5-flash", "GGL: gemini-2.5-flash-lite", "GGL: gemini-2.0-flash",
             "GGL: gemini-1.5-pro-latest",
-            "VAI: gemini-3.1-pro-preview", "VAI: gemini-3.1-flash-preview", "VAI: gemini-3.1-flash-lite-preview",
+            "VAI: gemini-3.1-pro-preview", "VAI: gemini-3.1-flash-lite-preview",
             "VAI: gemini-3-pro-preview", "VAI: gemini-3-flash-preview",
             "VAI: gemini-2.5-pro", "VAI: gemini-2.5-flash", "VAI: gemini-2.0-flash", "VAI: gemini-1.5-pro",
             "XAI: grok-4", "XAI: grok-3", "XAI: grok-3-mini",
