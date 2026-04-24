@@ -949,8 +949,6 @@ class ModuleManager(QObject):
         if self.ocr is not None:
             self.updateModuleSetupParam(self.ocr, param_key, param_content)
             cfg_module.ocr_params[self.ocr.name] = self.ocr.params
-            if param_key == 'provider':
-                self.ocr_panel.refreshModuleParamWidget()
 
     def updateModuleSetupParam(self, 
                                module: Union[InpainterBase, BaseTranslator],
