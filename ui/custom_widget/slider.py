@@ -225,6 +225,9 @@ class Slider(QSlider):
         self.update()
         return super().leaveEvent(event)
 
+    def wheelEvent(self, event):
+        event.ignore()
+
 
 class PaintQSlider(Slider):
 

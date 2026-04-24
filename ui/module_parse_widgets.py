@@ -7,7 +7,7 @@ from .custom_widget import ConfigComboBox, ParamComboBox, NoBorderPushBtn, Param
 from utils.shared import CONFIG_COMBOBOX_LONG, size2width, CONFIG_COMBOBOX_SHORT, CONFIG_COMBOBOX_HEIGHT
 from utils.config import pcfg
 
-from qtpy.QtWidgets import QPlainTextEdit, QHBoxLayout, QVBoxLayout, QWidget, QLabel, QCheckBox, QLineEdit, QGridLayout, QPushButton
+from qtpy.QtWidgets import QPlainTextEdit, QHBoxLayout, QVBoxLayout, QWidget, QLabel, QCheckBox, QLineEdit, QGridLayout, QPushButton, QFileDialog
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QDoubleValidator
 
@@ -37,9 +37,10 @@ class ParamCheckGroup(QWidget):
 
 
 class ParamLineEditor(QLineEdit):
-    
+
     paramwidget_edited = Signal(str, str)
-    def __init__(self, param_key: str, force_digital, size='short', *args, **kwargs) -> None:
+    pathbtn_clicked = Signal()
+    def __init__(self, param_key: str, force_digital=False, size='short', path_selector=False, *args, **kwargs) -> None:
         super().__init__( *args, **kwargs)
         self.param_key = param_key
         self.setFixedWidth(size2width(size))
@@ -49,6 +50,10 @@ class ParamLineEditor(QLineEdit):
         if force_digital:
             validator = QDoubleValidator()
             self.setValidator(validator)
+
+        if path_selector:
+            self.path_select_btn = NoBorderPushBtn(self.tr('Select Path'))
+            self.path_select_btn.clicked.connect(self.pathbtn_clicked)
 
     def on_text_changed(self):
         self.paramwidget_edited.emit(self.param_key, self.text())
@@ -179,6 +184,8 @@ class ParamWidget(QWidget):
                 flush_btn = param_dict.get('flush_btn', False)
                 path_selector = param_dict.get('path_selector', False)
                 param_size = param_dict.get('size', 'short')
+                if param_key == 'model':
+                    param_size = 'long'
                 if param_type == 'selector':
                     if 'url' in param_key:
                         size = size2width('median')
@@ -214,7 +221,7 @@ class ParamWidget(QWidget):
                     require_label = False
 
                 elif param_type == 'line_editor':
-                    param_widget = ParamLineEditor(param_key, force_digital=is_digital)
+                    param_widget = ParamLineEditor(param_key, force_digital=is_digital, size=param_size, path_selector=path_selector)
                     param_widget.setText(str(value))
 
                 elif param_type == 'check_group':
@@ -255,7 +262,7 @@ class ParamWidget(QWidget):
         self.paramwidget_edited.emit(paramw.param_key, content_dict)
 
     def on_pathbtn_clicked(self):
-        paramw: ParamComboBox = self.sender()
+        paramw = self.sender()
         content_dict = {'content': '', 'widget': paramw, 'select_path': True}
         self.paramwidget_edited.emit(paramw.param_key, content_dict)
 
@@ -359,6 +366,21 @@ class ModuleConfigParseWidget(QWidget):
             else:
                 widget.show()
             self.visibleWidget = widget
+
+    def refreshModuleParamWidget(self):
+        module = self.module_combobox.currentText()
+        self.module_combobox.blockSignals(True)
+        self.module_combobox.setEnabled(False)
+        if module in self.param_widget_map:
+            widget = self.param_widget_map[module]
+            if widget is not None:
+                self.params_layout.removeWidget(widget)
+                widget.blockSignals(True)
+                widget.deleteLater()
+                self.param_widget_map[module] = None
+        self.updateModuleParamWidget()
+        self.module_combobox.setEnabled(True)
+        self.module_combobox.blockSignals(False)
 
     def on_module_changed(self):
         self.updateModuleParamWidget()
