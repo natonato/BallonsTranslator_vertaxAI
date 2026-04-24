@@ -367,13 +367,18 @@ class ModuleConfigParseWidget(QWidget):
 
     def refreshModuleParamWidget(self):
         module = self.module_combobox.currentText()
+        self.module_combobox.blockSignals(True)
+        self.module_combobox.setEnabled(False)
         if module in self.param_widget_map:
             widget = self.param_widget_map[module]
             if widget is not None:
                 self.params_layout.removeWidget(widget)
+                widget.blockSignals(True)
                 widget.deleteLater()
                 self.param_widget_map[module] = None
         self.updateModuleParamWidget()
+        self.module_combobox.setEnabled(True)
+        self.module_combobox.blockSignals(False)
 
     def on_module_changed(self):
         self.updateModuleParamWidget()
