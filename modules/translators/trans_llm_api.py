@@ -82,6 +82,7 @@ class LLM_API_Translator(BaseTranslator):
         "vertex_location": {
             "type": "selector",
             "options": [
+                "global",
                 "us-central1",
                 "us-east4",
                 "us-west1",
@@ -530,8 +531,13 @@ class LLM_API_Translator(BaseTranslator):
         if ": " in model_name:
             model_name = model_name.split(": ", 1)[1]
 
+        if vertex_location == "global":
+            host = "aiplatform.googleapis.com"
+        else:
+            host = f"{vertex_location}-aiplatform.googleapis.com"
+
         url = (
-            f"https://{vertex_location}-aiplatform.googleapis.com/v1"
+            f"https://{host}/v1"
             f"/projects/{vertex_project}/locations/{vertex_location}"
             f"/publishers/google/models/{model_name}:generateContent"
         )
