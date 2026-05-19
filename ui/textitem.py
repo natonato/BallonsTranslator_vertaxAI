@@ -965,7 +965,7 @@ class TextBlkItem(QGraphicsTextItem):
         '''
         value should be point size
         '''
-        
+        value = min(200, value)
         cursor, after_kwargs = self._before_set_ffmt(set_selected=set_selected, restore_cursor=restore_cursor)
         self.layout.relayout_on_changed = False
         if self.fontformat.stroke_width != 0:

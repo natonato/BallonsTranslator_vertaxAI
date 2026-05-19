@@ -90,7 +90,13 @@ class FontFormat(Config):
     def size_pt(self):
         return px2pt(self.font_size)
 
+    def __setattr__(self, key: str, value):
+        if key == 'font_size':
+            value = min(200, value)
+        super().__setattr__(key, value)
+
     def __post_init__(self):
+        self.font_size = min(200, self.font_size)
         da = self.deprecated_attributes
         if len(da) > 0:
             if 'size' in da:
