@@ -247,28 +247,13 @@ def main():
     LOGGER.info(f'set display language to {lang}')
 
     # Fonts
-    # Load custom fonts if they exist
-    if osp.exists(PATH_FONTS):
-        for fp in find_all_files_recursive(PATH_FONTS, FONT_EXTS):
-            fnt_idx = QFontDatabase.addApplicationFont(fp)
-            if fnt_idx >= 0:
-                shared.CUSTOM_FONTS.append(QFontDatabase.applicationFontFamilies(fnt_idx)[0])
+    # Filter out harmless DirectWrite font warnings for legacy Windows fonts
+    from qtpy.QtCore import QLoggingCategory
+    QLoggingCategory.setFilterRules("qt.qpa.fonts.warning=false")
 
-    if sys.platform == 'win32' and (args.headless or args.headless_continuous):
-        # font database does not initialise on windows with qpa -offscreen:
-        # whttps://github.com/dmMaze/BallonsTranslator/issues/519
-        from qtpy.QtCore import QStandardPaths
-        font_dir_list = QStandardPaths.standardLocations(QStandardPaths.StandardLocation.FontsLocation)
-        for fd in font_dir_list:
-            fp_list = find_all_files_recursive(fd, FONT_EXTS)
-            for fp in fp_list:
-                fnt_idx = QFontDatabase.addApplicationFont(fp)
-
-    if shared.FLAG_QT6:
-        shared.FONT_FAMILIES = set(f for f in QFontDatabase.families())
-    else:
-        fdb = QFontDatabase()
-        shared.FONT_FAMILIES = set(fdb.families())
+    # Load custom fonts and user fonts
+    from utils.font_utils import reload_fonts
+    reload_fonts()
 
     app_font = QFont('Microsoft YaHei UI')
     if not app_font.exactMatch() or sys.platform == 'darwin':

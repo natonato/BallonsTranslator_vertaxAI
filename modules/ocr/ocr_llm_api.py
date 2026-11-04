@@ -142,12 +142,16 @@ class LLM_OCR(OCRBase):
         "OAI: gpt-4-vision-preview",
         "OAI: gpt-4o",
         "OAI: gpt-4",
-        "GGL: gemini-1.5-pro-latest",
-        "GGL: gemini-1.5-flash-latest",
+        "GGL: gemini-3.8-flash",
+        "GGL: gemini-3.7-flash",
+        "GGL: gemini-3.7-pro",
+        "GGL: gemini-3.6-flash",
+        "VAI: gemini-3.8-flash",
+        "VAI: gemini-3.7-flash",
+        "VAI: gemini-3.7-pro",
+        "VAI: gemini-3.6-flash",
         "VAI: gemini-2.5-flash",
         "VAI: gemini-2.5-pro",
-        "VAI: gemini-2.0-flash",
-        "VAI: gemini-1.5-pro",
     ]
 
     params = {

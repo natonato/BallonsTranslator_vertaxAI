@@ -16,6 +16,7 @@ from utils.logger import logger as LOGGER
 from utils.text_processing import is_cjk, full_len, half_len
 from utils.textblock import TextBlock, TextAlignment
 from utils import shared
+from utils import font_utils
 from utils.message import create_error_dialog, create_info_dialog
 from modules.translators.trans_chatgpt import GPTTranslator
 from modules import GET_VALID_TEXTDETECTORS, GET_VALID_INPAINTERS, GET_VALID_TRANSLATORS, GET_VALID_OCR
@@ -389,8 +390,9 @@ class MainWindow(mainwindow_cls):
         self.configPanel.save_config.connect(self.save_config)
         self.configPanel.reload_textstyle.connect(self.load_textstyle_from_proj_dir)
         self.configPanel.show_only_custom_font.connect(self.on_show_only_custom_font)
-        if pcfg.let_show_only_custom_fonts_flag:
-            self.on_show_only_custom_font(True)
+        self.configPanel.filter_by_lang_changed.connect(self.on_filter_by_lang_changed)
+        self.configPanel.refresh_fonts_requested.connect(lambda: self.on_refresh_fonts(show_dialog=True))
+        self.update_font_list()
 
         textblock_mode = pcfg.imgtrans_textblock
         if pcfg.imgtrans_textedit:
@@ -469,12 +471,42 @@ class MainWindow(mainwindow_cls):
             pcfg.text_styles_path = text_style_path
             save_text_styles()
 
-    def on_show_only_custom_font(self, only_custom: bool):
-        if only_custom:
-            font_list = shared.CUSTOM_FONTS
-        else:
-            font_list = shared.FONT_FAMILIES
+    def update_font_list(self):
+        font_list = font_utils.get_filtered_font_list(
+            only_custom=pcfg.let_show_only_custom_fonts_flag,
+            filter_by_lang=pcfg.let_filter_by_lang_flag,
+            target_lang=pcfg.module.translate_target,
+            current_font=self.textPanel.formatpanel.familybox.currentText()
+        )
         self.textPanel.formatpanel.familybox.update_font_list(font_list)
+
+    def on_show_only_custom_font(self, only_custom: bool):
+        self.update_font_list()
+
+    def on_filter_by_lang_changed(self, filter_by_lang: bool):
+        self.update_font_list()
+
+    def on_refresh_fonts(self, show_dialog: bool = False):
+        try:
+            added, total = font_utils.reload_fonts()
+            self.update_font_list()
+            is_ko = pcfg.display_lang in ('ko_KR', 'Korean')
+            is_zh = pcfg.display_lang in ('zh_CN', 'Chinese')
+            if is_ko:
+                msg = f"폰트 목록이 새로고침되었습니다. (새로 추가: {added}개, 전체: {total}개)"
+            elif is_zh:
+                msg = f"字体列表已刷新。（新增: {added}个，总计: {total}个）"
+            else:
+                msg = self.tr("Font list refreshed. Added {0} new fonts, total {1} fonts.").format(added, total)
+            LOGGER.info(msg)
+            if show_dialog:
+                create_info_dialog(msg)
+        except Exception as e:
+            LOGGER.error(f'Failed to refresh fonts: {e}')
+            if show_dialog:
+                is_ko = pcfg.display_lang in ('ko_KR', 'Korean')
+                err_title = "폰트 새로고침 실패" if is_ko else self.tr('Failed to refresh fonts.')
+                create_error_dialog(e, err_title)
 
     def openDir(self, directory: str):
         try:
@@ -1224,6 +1256,8 @@ class MainWindow(mainwindow_cls):
             combobox.blockSignals(True)
             combobox.setCurrentText(text)
             combobox.blockSignals(False)
+        if pcfg.let_filter_by_lang_flag:
+            self.update_font_list()
 
     def on_inpaint_changed(self):
         module = self.bottomBar.inpaint_selector.selector.currentText()
@@ -1327,6 +1361,7 @@ class MainWindow(mainwindow_cls):
         override_effect = pcfg.let_fnteffect_flag == 1
         override_writing_mode = pcfg.let_writing_mode_flag == 1
         override_font_family = pcfg.let_family_flag == 1
+        override_angle = getattr(pcfg, 'let_angle_flag', 0) == 1
         gf = self.textPanel.formatpanel.global_format
 
         inpaint_only = pcfg.module.enable_inpaint
@@ -1334,6 +1369,12 @@ class MainWindow(mainwindow_cls):
         
         if not inpaint_only:
             for ii, blk in enumerate(blk_list):
+                if override_angle and blk.angle != 0:
+                    if blk._bounding_rect is None:
+                        blk._bounding_rect = blk.bounding_rect()
+                    blk.angle = 0
+                    blk.set_lines_by_xywh(blk._bounding_rect, angle=0, adjust_bbox=True)
+
                 if self._run_imgtrans_wo_textstyle_update and ffmt_list is not None:
                     blk.fontformat.merge(ffmt_list[ii])
                 else:
@@ -1416,6 +1457,13 @@ class MainWindow(mainwindow_cls):
             return
         
         blkitem_list = [self.st_manager.textblk_item_list[idx] for idx in blk_ids]
+
+        if getattr(pcfg, 'let_angle_flag', 0) == 1 and mode != 0:
+            for blkitem in blkitem_list:
+                if blkitem.rotation() != 0:
+                    blkitem.setAngle(0)
+                    if self.st_manager.txtblkShapeControl.blk_item == blkitem:
+                        self.st_manager.txtblkShapeControl.setAngle(0)
 
         pairw_list = []
         for blk in blkitem_list:

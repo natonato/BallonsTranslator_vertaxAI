@@ -133,9 +133,11 @@ class ProgramConfig(Config):
     let_alignment_flag: int = 0
     let_writing_mode_flag: int = 0
     let_family_flag: int = 0
+    let_angle_flag: int = 0
     let_autolayout_flag: bool = True
     let_uppercase_flag: bool = True
     let_show_only_custom_fonts_flag: bool = False
+    let_filter_by_lang_flag: bool = False
     let_textstyle_indep_flag: bool = False
     text_styles_path: str = osp.join(shared.DEFAULT_TEXTSTYLE_DIR, 'default.json')
 

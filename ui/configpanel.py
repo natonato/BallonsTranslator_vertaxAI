@@ -341,6 +341,8 @@ class ConfigPanel(Widget):
     unload_models = Signal()
     reload_textstyle = Signal(bool)
     show_only_custom_font = Signal(bool)
+    filter_by_lang_changed = Signal(bool)
+    refresh_fonts_requested = Signal()
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -410,6 +412,9 @@ class ConfigPanel(Widget):
         dec_program_str = self.tr('decide by program')
         use_global_str = self.tr('use global setting')
 
+        is_ko = pcfg.display_lang in ('ko_KR', 'Korean')
+        is_zh = pcfg.display_lang in ('zh_CN', 'Chinese')
+
         global_fntfmt_widget = QWidget()
         global_fntfmt_layout = QGridLayout(global_fntfmt_widget)
         global_fntfmt_layout.setSpacing(0)
@@ -447,6 +452,16 @@ class ConfigPanel(Widget):
         self.let_family_combox.activated.connect(self.on_family_flag_changed)
         global_fntfmt_layout.addWidget(sublock, 3, 1)
 
+        angle_title = "문장 각도" if is_ko else ("文本角度" if is_zh else self.tr('Text Angle'))
+        angle_options = (
+            ["프로그램 결정", "항상 0도 (수직/수평 고정)"] if is_ko else
+            (["程序决定", "始终为 0°"] if is_zh else
+            [dec_program_str, self.tr('Always 0°')])
+        )
+        self.let_angle_combox, sublock = combobox_with_label(angle_options, angle_title, parent=self, insert_stretch=True)
+        self.let_angle_combox.activated.connect(self.on_angle_flag_changed)
+        global_fntfmt_layout.addWidget(sublock, 4, 0)
+
         global_fntfmt_layout.addItem(QSpacerItem(0, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding), 0, 2)
 
         self.let_autolayout_checker, sublock = generalConfigPanel.addCheckBox(self.tr('Auto layout'), 
@@ -461,6 +476,28 @@ class ConfigPanel(Widget):
 
         self.let_show_only_custom_fonts, sublock = generalConfigPanel.addCheckBox(self.tr("Show only custom fonts"))
         self.let_show_only_custom_fonts.stateChanged.connect(self.on_show_only_custom_fonts)
+
+        is_ko = pcfg.display_lang in ('ko_KR', 'Korean')
+        is_zh = pcfg.display_lang in ('zh_CN', 'Chinese')
+
+        filter_title = "번역 대상 언어 미지원 폰트 숨김" if is_ko else ("隐藏不支持目标语言的字体" if is_zh else self.tr("Hide fonts not supporting target language"))
+        filter_desc = "번역할 언어를 지원하지 않는 폰트를 목록에서 숨깁니다." if is_ko else ("隐藏不支持目标翻译语言的字体。" if is_zh else self.tr("Hide fonts that do not support the target translation language."))
+        self.let_filter_by_lang_checker, sublock = generalConfigPanel.addCheckBox(
+            filter_title,
+            discription=filter_desc
+        )
+        self.let_filter_by_lang_checker.stateChanged.connect(self.on_filter_by_lang_changed)
+
+        btn_refresh_text = "폰트 목록 새로고침" if is_ko else ("刷新字体列表" if is_zh else self.tr("Refresh Font List"))
+        self.btn_refresh_fonts = QPushButton(btn_refresh_text, parent=self)
+        self.btn_refresh_fonts.setFixedWidth(CONFIG_COMBOBOX_MIDEAN)
+        self.btn_refresh_fonts.clicked.connect(self.on_refresh_fonts_clicked)
+        reload_title = "폰트 다시 불러오기" if is_ko else ("重新加载字体" if is_zh else self.tr("Reload Fonts"))
+        reload_desc = "새로 설치된 시스템 폰트 및 사용자 폰트를 검색하여 로드합니다." if is_ko else ("扫描并加载新安装的系统或自定义字体。" if is_zh else self.tr("Scan and load newly installed system or custom fonts."))
+        refresh_sublock = ConfigSubBlock(self.btn_refresh_fonts, reload_title, reload_desc, vertical_layout=False)
+        refresh_sublock.layout().setAlignment(Qt.AlignmentFlag.AlignLeft)
+        refresh_sublock.layout().insertStretch(-1)
+        generalConfigPanel.addSublock(refresh_sublock)
 
         generalConfigPanel.addTextLabel(label_save)
         self.rst_imgformat_combobox, imsave_sublock = generalConfigPanel.addCombobox(['PNG', 'JPG', 'WEBP', 'JXL'], self.tr('Result image format'))
@@ -586,6 +623,9 @@ class ConfigPanel(Widget):
     def on_writing_mode_flag_changed(self):
         pcfg.let_writing_mode_flag = self.let_writing_mode_combox.currentIndex()
 
+    def on_angle_flag_changed(self):
+        pcfg.let_angle_flag = self.let_angle_combox.currentIndex()
+
     def on_family_flag_changed(self):
         pcfg.let_family_flag = self.let_family_combox.currentIndex()
 
@@ -595,6 +635,13 @@ class ConfigPanel(Widget):
     def on_show_only_custom_fonts(self):
         pcfg.let_show_only_custom_fonts_flag = self.let_show_only_custom_fonts.isChecked()
         self.show_only_custom_font.emit(pcfg.let_show_only_custom_fonts_flag)
+
+    def on_filter_by_lang_changed(self):
+        pcfg.let_filter_by_lang_flag = self.let_filter_by_lang_checker.isChecked()
+        self.filter_by_lang_changed.emit(pcfg.let_filter_by_lang_flag)
+
+    def on_refresh_fonts_clicked(self):
+        self.refresh_fonts_requested.emit()
 
     def focusOnTranslator(self):
         idx0, idx1 = self.trans_sub_block.idx0, self.trans_sub_block.idx1
@@ -635,6 +682,7 @@ class ConfigPanel(Widget):
         self.let_alignment_combox.setCurrentIndex(pcfg.let_alignment_flag)
         self.let_family_combox.setCurrentIndex(pcfg.let_family_flag)
         self.let_writing_mode_combox.setCurrentIndex(pcfg.let_writing_mode_flag)
+        self.let_angle_combox.setCurrentIndex(getattr(pcfg, 'let_angle_flag', 0))
         self.let_autolayout_checker.setChecked(pcfg.let_autolayout_flag)
         self.selectext_minimenu_checker.setChecked(pcfg.textselect_mini_menu)
         self.let_uppercase_checker.setChecked(pcfg.let_uppercase_flag)
@@ -648,5 +696,6 @@ class ConfigPanel(Widget):
         self.load_model_checker.setChecked(pcfg.module.load_model_on_demand)
         self.empty_runcache_checker.setChecked(pcfg.module.empty_runcache)
         self.let_show_only_custom_fonts.setChecked(pcfg.let_show_only_custom_fonts_flag)
+        self.let_filter_by_lang_checker.setChecked(pcfg.let_filter_by_lang_flag)
 
         self.blockSignals(False)

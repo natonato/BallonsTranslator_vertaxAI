@@ -3,7 +3,9 @@ import time
 import json
 import traceback
 import os
-from typing import List, Dict, Optional, Type
+import os.path as osp
+import datetime
+from typing import List, Dict, Optional, Type, Any
 
 import httpx
 import openai
@@ -57,11 +59,15 @@ class LLM_API_Translator(BaseTranslator):
                 "OAI: gpt-4o",
                 "OAI: gpt-4-turbo",
                 "OAI: gpt-3.5-turbo",
-                "GGL: gemini-3.1-pro-preview",
-                "GGL: gemini-3.1-flash-lite-preview",
-                "GGL: gemini-3-pro-preview",
-                "GGL: gemini-3-flash-preview",
-                "GGL: gemini-1.5-pro-latest",
+                "GGL: gemini-3.8-flash",
+                "GGL: gemini-3.7-pro",
+                "GGL: gemini-3.7-flash",
+                "GGL: gemini-3.6-flash",
+                "GGL: gemini-3.5-flash",
+                "GGL: gemini-3.5-flash-lite",
+                "GGL: gemini-2.5-pro",
+                "GGL: gemini-2.5-flash",
+                "GGL: gemini-2.5-flash-lite",
                 "XAI: grok-4",
                 "XAI: grok-3",
                 "XAI: grok-3-mini",
@@ -229,13 +235,12 @@ class LLM_API_Translator(BaseTranslator):
     def _update_model_options(self, provider: str):
         all_models = [
             "OAI: gpt-4o", "OAI: gpt-4-turbo", "OAI: gpt-3.5-turbo",
-            "GGL: gemini-3.1-pro-preview", "GGL: gemini-3.1-flash-lite-preview",
-            "GGL: gemini-3-pro-preview", "GGL: gemini-3-flash-preview",
-            "GGL: gemini-2.5-pro", "GGL: gemini-2.5-flash", "GGL: gemini-2.5-flash-lite", "GGL: gemini-2.0-flash",
-            "GGL: gemini-1.5-pro-latest",
-            "VAI: gemini-3.1-pro-preview", "VAI: gemini-3.1-flash-lite-preview",
-            "VAI: gemini-3-pro-preview", "VAI: gemini-3-flash-preview",
-            "VAI: gemini-2.5-pro", "VAI: gemini-2.5-flash", "VAI: gemini-2.0-flash", "VAI: gemini-1.5-pro",
+            "GGL: gemini-3.8-flash", "GGL: gemini-3.7-pro", "GGL: gemini-3.7-flash", "GGL: gemini-3.6-flash",
+            "GGL: gemini-3.5-flash", "GGL: gemini-3.5-flash-lite",
+            "GGL: gemini-2.5-pro", "GGL: gemini-2.5-flash", "GGL: gemini-2.5-flash-lite",
+            "VAI: gemini-3.8-flash", "VAI: gemini-3.7-pro", "VAI: gemini-3.7-flash", "VAI: gemini-3.6-flash",
+            "VAI: gemini-3.5-flash", "VAI: gemini-3.5-flash-lite",
+            "VAI: gemini-2.5-pro", "VAI: gemini-2.5-flash",
             "XAI: grok-4", "XAI: grok-3", "XAI: grok-3-mini",
             "LLMS: (override model field)", "OLLAMA: (override model field)",
         ]
@@ -395,19 +400,22 @@ class LLM_API_Translator(BaseTranslator):
 
     def _assemble_prompts(self, queries: List[str], to_lang: str):
         from_lang = self.lang_map.get(self.lang_source, self.lang_source)
+        batch_size = 25  # Split into batches of 25 to prevent output token truncation on dense pages
 
-        input_elements = [
-            {"id": i + 1, "source": query} for i, query in enumerate(queries)
-        ]
-        input_json_str = json.dumps(input_elements, ensure_ascii=False, indent=2)
+        for chunk_idx in range(0, len(queries), batch_size):
+            chunk = queries[chunk_idx : chunk_idx + batch_size]
+            input_elements = [
+                {"id": i + 1, "source": query} for i, query in enumerate(chunk)
+            ]
+            input_json_str = json.dumps(input_elements, ensure_ascii=False, indent=2)
 
-        prompt = (
-            f"Please translate the following text snippets from {from_lang} to {to_lang}. "
-            f"The input is provided as a JSON array. Respond with a JSON object in the specified format.\n\n"
-            f"INPUT:\n{input_json_str}"
-        )
+            prompt = (
+                f"Please translate the following text snippets from {from_lang} to {to_lang}. "
+                f"The input is provided as a JSON array. Respond with a JSON object in the specified format.\n\n"
+                f"INPUT:\n{input_json_str}"
+            )
 
-        yield prompt, len(queries)
+            yield prompt, len(chunk)
 
     def _respect_delay(self):
         current_time = time.time()
@@ -515,6 +523,340 @@ class LLM_API_Translator(BaseTranslator):
             self.logger.error(f"Failed to load Vertex AI credentials: {e}")
             return None
 
+    @staticmethod
+    def _check_safety_refusal(text: str) -> Optional[str]:
+        """Detect whether the response is an AI content safety / policy refusal message."""
+        if not text:
+            return None
+        lower = text.lower()
+        refusal_patterns = [
+            "cannot fulfill this request",
+            "unable to process or translate",
+            "unable to fulfill this request",
+            "sexually explicit content",
+            "safety guidelines",
+            "content policy",
+            "violates our policies",
+            "as an ai language model, i cannot",
+            "as a responsible ai",
+        ]
+        for pat in refusal_patterns:
+            if pat in lower:
+                return text.strip()
+        return None
+
+    def _save_failed_response(
+        self,
+        prompt: str,
+        raw_content: str,
+        error_info: str,
+        is_safety_refusal: bool = False
+    ) -> str:
+        """Save failed LLM response and prompt to a log file for diagnosis."""
+        try:
+            log_dir = osp.abspath("logs/llm_parse_errors")
+            os.makedirs(log_dir, exist_ok=True)
+
+            now = datetime.datetime.now()
+            timestamp_str = now.strftime("%Y%m%d_%H%M%S")
+            prefix = "safety_refusal" if is_safety_refusal else "parse_error"
+            model_name = self.override_model or self.model or "unknown"
+            safe_model = re.sub(r'[^a-zA-Z0-9_]', '_', model_name)
+            filename = f"{prefix}_{safe_model}_{timestamp_str}.txt"
+            file_path = osp.join(log_dir, filename)
+
+            report = [
+                "=" * 80,
+                f"LLM TRANSLATION {'SAFETY REFUSAL' if is_safety_refusal else 'PARSE ERROR'} REPORT",
+                "=" * 80,
+                f"Timestamp   : {now.strftime('%Y-%m-%d %H:%M:%S')}",
+                f"Provider    : {self.provider}",
+                f"Model       : {model_name}",
+                f"Error Info  : {error_info}",
+                "-" * 80,
+                "PROMPT SENT TO LLM:",
+                "-" * 80,
+                prompt or "(No prompt recorded)",
+                "-" * 80,
+                "RAW LLM RESPONSE:",
+                "-" * 80,
+                raw_content or "(Empty response)",
+                "=" * 80,
+            ]
+
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(report))
+
+            return file_path
+        except Exception as e:
+            self.logger.error(f"Failed to save error report to file: {e}")
+            return ""
+
+    @staticmethod
+    def _extract_json_text(text: str) -> str:
+        """Extract JSON substring from raw response, supporting both objects and arrays."""
+        cleaned = text.strip()
+
+        # 1. Look for markdown code blocks (supports object {} or array [])
+        # Handles case where closing ``` is missing (truncated output)
+        match = re.search(r"```(?:json)?\s*([\{\[].*?)(?:```|$)", cleaned, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+
+        # 2. Find boundary of first { or [ and last } or ]
+        brace_idx = cleaned.find("{")
+        bracket_idx = cleaned.find("[")
+
+        start_idx = -1
+        if brace_idx != -1 and bracket_idx != -1:
+            start_idx = min(brace_idx, bracket_idx)
+        elif brace_idx != -1:
+            start_idx = brace_idx
+        elif bracket_idx != -1:
+            start_idx = bracket_idx
+
+        rbrace_idx = cleaned.rfind("}")
+        rbracket_idx = cleaned.rfind("]")
+        end_idx = max(rbrace_idx, rbracket_idx)
+
+        if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
+            return cleaned[start_idx : end_idx + 1].strip()
+
+        return cleaned
+
+    @staticmethod
+    def _repair_truncated_json(text: str) -> Optional[Any]:
+        """Attempt to close open strings, brackets, and braces to salvage truncated JSON."""
+        cleaned = text.strip()
+        if not cleaned:
+            return None
+
+        in_string = False
+        escape = False
+        stack = []
+
+        for char in cleaned:
+            if escape:
+                escape = False
+                continue
+            if char == '\\':
+                escape = True
+                continue
+            if char == '"':
+                in_string = not in_string
+                continue
+            if not in_string:
+                if char in ('{', '['):
+                    stack.append(char)
+                elif char == '}' and stack and stack[-1] == '{':
+                    stack.pop()
+                elif char == ']' and stack and stack[-1] == '[':
+                    stack.pop()
+
+        closing = ""
+        if in_string:
+            closing += '"'
+        for char in reversed(stack):
+            if char == '{':
+                closing += '}'
+            elif char == '[':
+                closing += ']'
+
+        repaired = cleaned + closing
+        try:
+            return json.loads(repaired, strict=False)
+        except Exception:
+            pass
+
+        # Try removing trailing incomplete element if last attempt failed
+        last_comma = cleaned.rfind(",")
+        if last_comma != -1:
+            sub = cleaned[:last_comma].strip()
+            in_string = False
+            escape = False
+            stack = []
+            for char in sub:
+                if escape:
+                    escape = False
+                    continue
+                if char == '\\':
+                    escape = True
+                    continue
+                if char == '"':
+                    in_string = not in_string
+                    continue
+                if not in_string:
+                    if char in ('{', '['):
+                        stack.append(char)
+                    elif char == '}' and stack and stack[-1] == '{':
+                        stack.pop()
+                    elif char == ']' and stack and stack[-1] == '[':
+                        stack.pop()
+            closing = ""
+            if in_string:
+                closing += '"'
+            for char in reversed(stack):
+                if char == '{':
+                    closing += '}'
+                elif char == '[':
+                    closing += ']'
+            try:
+                return json.loads(sub + closing, strict=False)
+            except Exception:
+                pass
+
+        return None
+
+    @staticmethod
+    def _regex_fallback_extract(text: str) -> List[Dict[str, Any]]:
+        """Last-resort fallback: regex extraction of id and translation pairs."""
+        results = []
+        # Pattern 1: id: 1 ... translation: "..."
+        pattern = r'["\']?id["\']?\s*:\s*(\d+).*?["\']?translation["\']?\s*:\s*["\'](.*?)(?:["\']\s*\}|(?=["\']?\s*,?\s*["\']?id["\']?\s*:)|$)'
+        matches = re.findall(pattern, text, re.DOTALL)
+        for m in matches:
+            try:
+                val = m[1].rstrip('"\', ')
+                results.append({"id": int(m[0]), "translation": val})
+            except Exception:
+                pass
+
+        # Pattern 2: "1": "translation"
+        if not results:
+            pattern_kv = r'["\'](\d+)["\']\s*:\s*["\'](.*?)["\'](?:\s*[,}\]])'
+            matches_kv = re.findall(pattern_kv, text, re.DOTALL)
+            for m in matches_kv:
+                try:
+                    results.append({"id": int(m[0]), "translation": m[1]})
+                except Exception:
+                    pass
+
+        return results
+
+    @staticmethod
+    def _normalize_translation_data(parsed_data: Any) -> List[Dict[str, Any]]:
+        """Normalize various JSON structures into standard list of dicts [{'id': ..., 'translation': ...}]."""
+        fixed_translations = []
+
+        if isinstance(parsed_data, dict):
+            # Case 1: {"translations": [...]} or {"result": [...]} or {"items": [...]} or {"data": [...]}
+            for key in ("translations", "result", "items", "data"):
+                if key in parsed_data and isinstance(parsed_data[key], list):
+                    fixed_translations = parsed_data[key]
+                    break
+
+            # Case 2: {"1": "...", "2": "..."}
+            if not fixed_translations and all(k.isdigit() for k in parsed_data.keys()):
+                fixed_translations = [
+                    {"id": int(k), "translation": str(v)} for k, v in parsed_data.items()
+                ]
+
+            # Case 3: Single item {"id": 1, "translation": "..."}
+            if not fixed_translations and "id" in parsed_data and "translation" in parsed_data:
+                fixed_translations = [parsed_data]
+
+        elif isinstance(parsed_data, list):
+            # Case 4: [{"id": 1, "translation": "..."}, ...]
+            if all(isinstance(item, dict) for item in parsed_data):
+                fixed_translations = parsed_data
+            # Case 5: ["translation 1", "translation 2", ...]
+            elif all(isinstance(item, str) for item in parsed_data):
+                fixed_translations = [
+                    {"id": i + 1, "translation": item} for i, item in enumerate(parsed_data)
+                ]
+
+        return fixed_translations
+
+    def _parse_and_validate_response(
+        self,
+        raw_content: str,
+        prompt: str = "",
+        candidate_info: Optional[dict] = None
+    ) -> TranslationResponse:
+        """Robustly parse and validate translation response from LLM."""
+        raw_content_clean = raw_content.strip() if raw_content else ""
+
+        # 1. Check for AI Safety Refusal
+        is_safety = False
+        refusal_reason = ""
+        if candidate_info and candidate_info.get("finishReason") in ("SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"):
+            is_safety = True
+            refusal_reason = f"Candidate finishReason: {candidate_info.get('finishReason')}"
+        else:
+            refusal_msg = self._check_safety_refusal(raw_content_clean)
+            if refusal_msg:
+                is_safety = True
+                refusal_reason = refusal_msg
+
+        if is_safety:
+            error_msg = f"AI Safety Policy Refusal: {refusal_reason}"
+            self.logger.error(error_msg)
+            saved_file = self._save_failed_response(
+                prompt=prompt,
+                raw_content=raw_content,
+                error_info=error_msg,
+                is_safety_refusal=True
+            )
+            if saved_file:
+                self.logger.error(f"Saved safety refusal response to: {saved_file}")
+            raise ValueError(error_msg)
+
+        if not raw_content_clean:
+            error_msg = "Received empty response from AI model."
+            saved_file = self._save_failed_response(
+                prompt=prompt,
+                raw_content=raw_content,
+                error_info=error_msg,
+                is_safety_refusal=False
+            )
+            raise ValueError(error_msg)
+
+        # 2. Extract JSON text
+        json_to_parse = self._extract_json_text(raw_content_clean)
+
+        # 3. Attempt 1: Direct JSON parsing with strict=False (handles unescaped newlines/tabs)
+        parsed_data = None
+        try:
+            parsed_data = json.loads(json_to_parse, strict=False)
+        except Exception as e1:
+            self.logger.warning(f"Initial JSON parse failed: {e1}. Attempting repair...")
+
+            # 4. Attempt 2: Repair truncated / unclosed JSON
+            repaired_data = self._repair_truncated_json(json_to_parse)
+            if repaired_data is not None:
+                parsed_data = repaired_data
+                self.logger.info("Successfully repaired and parsed truncated JSON.")
+            else:
+                # 5. Attempt 3: Regex fallback extraction of (id, translation) pairs
+                regex_translations = self._regex_fallback_extract(raw_content_clean)
+                if regex_translations:
+                    parsed_data = {"translations": regex_translations}
+                    self.logger.info(f"Successfully extracted {len(regex_translations)} translations using regex fallback.")
+                else:
+                    error_msg = f"JSONDecodeError: {e1}"
+                    saved_file = self._save_failed_response(
+                        prompt=prompt,
+                        raw_content=raw_content,
+                        error_info=error_msg,
+                        is_safety_refusal=False
+                    )
+                    self.logger.error(f"Failed to parse LLM response. Saved to: {saved_file}")
+                    raise e1
+
+        # 6. Normalize and validate data structure
+        fixed_translations = self._normalize_translation_data(parsed_data)
+        if not fixed_translations:
+            error_msg = f"Could not find valid translations in response structure: {parsed_data}"
+            saved_file = self._save_failed_response(
+                prompt=prompt,
+                raw_content=raw_content,
+                error_info=error_msg,
+                is_safety_refusal=False
+            )
+            raise ValueError(error_msg)
+
+        return TranslationResponse.model_validate({"translations": fixed_translations})
+
     def _request_vertex_translation(self, api_key: str, prompt: str) -> Optional[TranslationResponse]:
         """Make a direct REST API call to Vertex AI Gemini (generateContent)."""
         vertex_project = self.get_param_value("vertex_project") or ""
@@ -595,8 +937,9 @@ class LLM_API_Translator(BaseTranslator):
 
         data = response.json()
 
-        # Extract text from Gemini response
+        # Extract text and candidate info from Gemini response
         text_content = ""
+        candidate = None
         if "candidates" in data and data["candidates"]:
             candidate = data["candidates"][0]
             if "content" in candidate and "parts" in candidate["content"]:
@@ -604,10 +947,6 @@ class LLM_API_Translator(BaseTranslator):
                 for part in parts:
                     if "text" in part:
                         text_content += part["text"]
-
-        if not text_content:
-            self.logger.warning("No text content in Vertex AI response.")
-            return None
 
         # Extract usage info
         if "usageMetadata" in data:
@@ -618,50 +957,12 @@ class LLM_API_Translator(BaseTranslator):
         else:
             self.token_count_last = 0
 
-        # Parse JSON response
-        json_to_parse = text_content.strip()
-        match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", json_to_parse, re.DOTALL)
-        if match:
-            json_to_parse = match.group(1)
-        else:
-            start = json_to_parse.find("{")
-            end = json_to_parse.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                json_to_parse = json_to_parse[start : end + 1]
-
-        try:
-            parsed = json.loads(json_to_parse)
-            return TranslationResponse.model_validate(parsed)
-        except (ValidationError, json.JSONDecodeError) as e:
-            self.logger.warning(f"Initial parsing failed: {e}. Trying flexible format fix.")
-            try:
-                simple_data = json.loads(json_to_parse)
-                fixed_translations = []
-
-                # Case 1: {"result": [{"id": 1, "translation": "..."}, ...]}
-                if isinstance(simple_data, dict):
-                    for key in ("translations", "result", "items", "data"):
-                        if key in simple_data and isinstance(simple_data[key], list):
-                            fixed_translations = simple_data[key]
-                            break
-
-                    # Case 2: {"1": "...", "2": "..."}
-                    if not fixed_translations and all(k.isdigit() for k in simple_data.keys()):
-                        fixed_translations = [
-                            {"id": int(k), "translation": v} for k, v in simple_data.items()
-                        ]
-
-                # Case 3: [{"id": 1, "translation": "..."}, ...]
-                elif isinstance(simple_data, list):
-                    fixed_translations = simple_data
-
-                if fixed_translations:
-                    return TranslationResponse.model_validate({"translations": fixed_translations})
-                raise e
-            except Exception as final_e:
-                self.logger.error(f"Parse failed after fix attempt: {final_e}")
-                self.logger.debug(f"Raw content: {text_content}")
-                raise
+        # Parse & Validate response with full error recovery, safety check, and error logging
+        return self._parse_and_validate_response(
+            raw_content=text_content,
+            prompt=prompt,
+            candidate_info=candidate
+        )
 
     def _request_translation(self, prompt: str) -> Optional[TranslationResponse]:
         current_api_key = self._select_api_key()
@@ -729,63 +1030,13 @@ class LLM_API_Translator(BaseTranslator):
             and completion.choices[0].message.content
         ):
             raw_content = completion.choices[0].message.content
-            json_to_parse = raw_content.strip()
-
-            match = re.search(
-                r"```(?:json)?\s*(\{.*?\})\s*```", json_to_parse, re.DOTALL
+            choice = completion.choices[0]
+            candidate_info = {"finishReason": getattr(choice, "finish_reason", "")}
+            validated_response = self._parse_and_validate_response(
+                raw_content=raw_content,
+                prompt=prompt,
+                candidate_info=candidate_info
             )
-            if match:
-                self.logger.debug(
-                    "Markdown code block detected. Extracting JSON content."
-                )
-                json_to_parse = match.group(1)
-            else:
-                start = json_to_parse.find("{")
-                end = json_to_parse.rfind("}")
-                if start != -1 and end != -1 and end > start:
-                    json_to_parse = json_to_parse[start : end + 1]
-            try:
-                data_to_validate = json.loads(json_to_parse)
-                validated_response = TranslationResponse.model_validate(
-                    data_to_validate
-                )
-            except (ValidationError, json.JSONDecodeError) as e:
-                self.logger.warning(
-                    f"Initial Pydantic validation failed: {e}. Attempting to fix simple dictionary or list format."
-                )
-                try:
-                    simple_data = json.loads(json_to_parse)
-                    fixed_translations = []
-
-                    if isinstance(simple_data, dict) and all(
-                        k.isdigit() for k in simple_data.keys()
-                    ):
-                        fixed_translations = [
-                            {"id": int(k), "translation": v}
-                            for k, v in simple_data.items()
-                        ]
-                    elif isinstance(simple_data, list):
-                        fixed_translations = simple_data
-
-                    if fixed_translations:
-                        fixed_data = {"translations": fixed_translations}
-                        self.logger.debug(
-                            f"Transformed simple response to: {fixed_data}"
-                        )
-                        validated_response = TranslationResponse.model_validate(
-                            fixed_data
-                        )
-                        self.logger.info(
-                            "Successfully parsed response after fixing simple format."
-                        )
-                    else:
-                        raise e
-                except (ValidationError, json.JSONDecodeError, Exception) as final_e:
-                    self.logger.error(
-                        f"Pydantic validation or JSON parsing failed even after attempting fix: {final_e}"
-                    )
-                    self.logger.debug(f"Raw JSON content from API: {raw_content}")
-                    raise
         else:
             self.logger.warning("No valid message content in API response.")
             return None
